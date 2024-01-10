@@ -16,7 +16,7 @@ $ bash lpm -h # Or just bash lpm
 Clone this repository in your system:
 
 ```bash
-$ git clone GITHUB_URL
+$ git clone https://github.com/joaoiacillo/lpm
 $ cd lpm
 ```
 
