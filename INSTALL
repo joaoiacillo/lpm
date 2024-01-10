@@ -1,0 +1,12 @@
+#!/usr/bin/bash
+
+[ "$(whoami)" != "root" ] && echo "error: execute this script as root/sudo" && exit
+
+chmod +x ./lpm
+ln -s ./lpm /usr/bin/lpm
+
+if [ $? -eq 0 ]; then
+  echo "lpm is now installed. try \"lpm\" for testing."
+else
+  echo "error: couldn't create link to lpm. aborting."
+fi

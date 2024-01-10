@@ -1,0 +1,408 @@
+#!/usr/bin/bash
+# Linux Project Manager v0.1.0
+# ~ by João Iacillo
+
+### LPM Config #############################
+
+# CLI Version
+LPM_VERSION="0.1.0"
+
+# LPM home folder (can be set by env)
+LPM_HOME=${LPM_HOME-~/.lpm}
+
+# LPM projects folder (can be set by env)
+# If empty, $DF_PROJECTSDIR file content is
+# used.
+LPM_PROJECTS=
+
+# LPM project config folder name
+LPM_PCONFIG=".lpmc"
+
+### Defaults ###############################
+
+DF_PROJECTSDIR=$LPM_HOME/projects
+
+### Flags ##################################
+
+# Set by -v. Outputs info more frequently.
+FLAG_VERBOSE=false
+
+# Set by -q. Unsets verbose. Be quiet.
+FLAG_QUIET=false
+
+# Set by -s. Outputs only the crucial information.
+# Unsets verbose and quiet.
+FLAG_SIMPLE=false
+
+### Helps ##################################
+
+print_cli_help() {
+  echo "usage: lpm [CLI OPTIONS] COMMAND [ARGS]"
+  echo
+  echo "  Simple CLI for managing your projects. Each command has it's own help"
+  echo "  message and usage built-in. Use -h flag after the command name to"
+  echo "  display it."
+  echo
+  echo "Commands:"
+  echo "  get           Gets variables and configuration values"
+  echo "  create        Creates a new project"
+  echo "  remove        Removes a project"
+  echo "  list          Lists all projects"
+  echo "  clone         Clones a git repo into a project"
+  echo
+  echo "Options:"
+  echo "  -h -?         Prints the help message"
+  echo "  -v            Activates verbose mode"
+  echo "  -V            Prints the CLI version"
+  echo "  -q            Activates quiet mode"
+  echo "  -s            Activates simple mode (only prints crucial information)"
+  exit 0
+}
+
+print_get_help() {
+  echo "usage: lpm [CLI OPTIONS] get [-h|-?] [NAMES]"
+  echo
+  echo "  Gets values from the CLI such as folder paths and config"
+  echo "  variables in \"NAME: VALUE\" format."
+  echo
+  echo "  If CLI is on SIMPLE mode (-s), then the command only outputs the"
+  echo "  values."
+  echo
+  echo "Names:"
+  echo "  HOME          LPM Home dir path"
+  echo "  PROJECTS      LPM projects dir path"
+  echo "  PCOUNT        Nº of created projects"
+  echo "  PCOUNT:LANG   Nº of projects made in LANG"
+  echo
+  echo "Options:"
+  echo "  -h -?         Prints the command help message"
+  exit 0
+}
+
+print_create_help() {
+  echo "usage: lpm [CLI OPTIONS] create [-h|-?] NAME [OPTIONS]"
+  echo
+  echo "  Creates a new project in the projects folder. Providing a language"
+  echo "  name with -l makes the CLI look up for a .gitignore file"
+  echo "  automatically on GitHub, and if it doesn't exist, it throws an err."
+  echo
+  echo "  If CLI is on SIMPLE mode (-s), then the command only outputs the"
+  echo "  project path."
+  echo
+  echo "Options:"
+  echo "  -l LANGUAGE   Sets the programming language (e.g. node or python)"
+  echo "  -h -?         Prints the command help message"
+  exit 0
+}
+
+print_remove_help() {
+  echo "usage: lpm [CLI OPTIONS] remove [-h|-?] NAMES"
+  echo
+  echo "  Removes an already existing project from the system. But, after it is"
+  echo "  done, a prompt box appear asking if you're sure about it. Projects"
+  echo "  can no longer be recovered once deleted."
+  echo
+  echo "  If CLI is on SIMPLE mode (-s), then the prompt appears only once"
+  echo "  displaying only the necessary amount of information."
+  echo
+  echo "Options:"
+  echo "  -h -?         Prints the command help message"
+  exit 0
+}
+
+print_list_help() {
+  echo "usage: lpm [CLI OPTIONS] list [-h|-?] [OPTIONS]"
+  echo
+  echo "  Lists all the projects in the projects folder. It also shows the"
+  echo "  language used. The current git branch is displayed in parentheses if"
+  echo "  the project has a git repository in it."
+  echo
+  echo "Options:"
+  echo "  -h -?         Prints the command help message"
+  exit 0
+}
+
+print_clone_help() {
+  echo "usage: lpm [CLI OPTIONS] clone [-h|-?] [REPOSITORY_URL]"
+  echo
+  echo "  Clones a git repository into a project. Projects that are created"
+  echo "  through clone don't have any language attached to it."
+  echo
+  echo "Options:"
+  echo "  -h -?         Prints the command help message"
+  exit 0
+}
+
+### Utils ##################################
+
+log() {
+  [ $FLAG_QUIET == false -a $FLAG_SIMPLE == false ] &&
+    echo -e "lpm:" "$@"
+}
+
+vlog() {
+  [ $FLAG_VERBOSE == true ] && log "$@"
+}
+
+secho() {
+  [ $FLAG_SIMPLE == true ] && echo "$@"
+}
+
+throw() {
+  echo "lpm: error:" "$@" >&2
+  exit 1
+}
+
+is-valid-filename() {
+  [[ $1 =~ ^[a-zA-Z0-9_\.\s-]+$ ]]
+}
+
+get-gitignore() {
+  local NAME_FLETTER=$(echo "${1:0:1}" | tr '[:lower:]' '[:upper:]')
+  local NAME_REST=$(echo "${1:1}" | tr '[:upper:]' '[:lower:]')
+
+  local NAME_FULL="$NAME_FLETTER$NAME_REST"
+  curl "https://raw.githubusercontent.com/github/gitignore/main/$NAME_FULL.gitignore" -s
+}
+
+list-projects() {
+  for PROJECT in $(ls -1A $LPM_PROJECTS); do
+    local PROJECT_DIR=$LPM_PROJECTS/$PROJECT
+    local LANGUAGE=$(<$PROJECT_DIR/$LPM_PCONFIG/language)
+    local TEMPPWD=$(pwd)
+
+    local GIT=
+    if [ -d $PROJECT_DIR/.git ]; then
+      cd $PROJECT_DIR
+      GIT="($(git rev-parse --abbrev-ref HEAD))"
+    fi
+    cd $TEMPPWD
+
+    [ "$1" == "-o" ] &&
+      echo "$PROJECT:$LANGUAGE $GIT" ||
+      echo "$PROJECT_DIR:$LANGUAGE"
+  done
+}
+
+### Commands ###############################
+
+# Command for getting information about the CLI and projects
+lpm-get() {
+  declare -a INFOS
+
+  [[ "$1" =~ ^-[h?]$ || -z "$1" ]] && print_get_help
+
+  add() {
+    if [ $FLAG_SIMPLE == false ]; then
+      local LABEL=$1; shift
+      INFOS+=("$LABEL: $@")
+    else
+      shift
+      INFOS+=("$@")
+    fi
+  }
+
+  while [[ $1 != -* ]]; do
+    NAME=${1^^}
+    [ -z $NAME ] && break
+    case $NAME in
+      HOME)
+        add $NAME $LPM_HOME
+        ;;
+      PROJECTS)
+        add $NAME $LPM_PROJECTS
+        ;;
+      PCOUNT)
+        add $NAME $(list-projects | wc -l)
+        ;;
+      PCOUNT:*)
+        local LANG=$(echo $NAME | cut -d ":" -f2)
+        add $NAME $(list-projects | grep -ie ":$LANG" | wc -l)
+        ;;
+    esac
+    shift
+  done
+
+  printf "%s\n" "${INFOS[@]}"
+}
+
+# Command for creating a new project
+lpm-create() {
+  [[ "$1" =~ ^-[h?]$ || -z "$1" ]] && print_create_help
+
+  local NAME=$1; shift
+  local LANGUAGE="none"
+
+  local OPTIND=1
+  while getopts "h?l:" ARG $@; do
+    case $ARG in
+      l) LANGUAGE=$OPTARG
+        ;;
+      h|?) print_create_help
+        ;;
+    esac
+  done
+  
+  is-valid-filename $NAME ||
+    throw "invalid project name:" $NAME
+  log "creating project: $NAME"
+
+  local PROJECT_ROOT=$LPM_PROJECTS/$NAME
+  local LPMC=$PROJECT_ROOT/$LPM_PCONFIG
+
+  [ -d $PROJECT_ROOT ] && throw "project already exists."
+
+  mkdir -p $LPMC
+  echo $LANGUAGE > $LPMC/language
+
+  if [ $LANGUAGE != "none" ]; then
+    vlog "fetching gitignore for $LANGUAGE"
+    local GITIGNORE="$(get-gitignore $LANGUAGE)"
+    [ "$GITIGNORE"  == "404: Not Found" ] &&
+      throw "unknown language: $LANGUAGE"
+    echo $GITIGNORE > $PROJECT_ROOT/.gitignore
+  fi
+
+  vlog "initializing git"
+  local TEMP="$(pwd)"
+  cd "$PROJECT_ROOT"
+  git init -b main -q
+  cd "$TEMP"
+
+  log "project created successfully: $PROJECT_ROOT"
+  secho "$PROJECT_ROOT"
+}
+
+# Command for removing existing projects
+lpm-remove() {
+  declare -a NAMES
+
+  [[ "$1" =~ ^-[h?]$ || -z "$1" ]] && print_remove_help
+
+  while [[ $1 != -* ]]; do
+    [ -z $1 ] && break
+    NAMES+=($1); shift
+  done
+
+  if [ $FLAG_SIMPLE == true ]; then
+    read -n 1 -p "are you sure? (y/N) " RESULT
+    echo
+    [ "$RESULT" != 'y' ] && exit 1
+  fi
+
+  for NAME in "${NAMES[@]}"; do
+    local PROJECT_DIR=$LPM_PROJECTS/$NAME
+  
+    [ ! -d "$PROJECT_DIR" ] && throw "unknown project: $NAME"
+
+    if [ $FLAG_SIMPLE == false ]; then
+      read -n 1 -p "lpm: are you sure you want to delete the project \"$NAME\"? (y/N) " RESULT
+      echo
+    fi
+  
+    [ "$RESULT" != 'y' ] && throw "aborting..."
+  
+    rm -f -r $PROJECT_DIR
+    log "project removed successfully."
+    secho "removed"
+  done
+}
+
+# Command for listing all the projects
+lpm-list() {
+  [[ "$1" =~ ^-[h?]$ ]] && print_list_help
+
+  local OPTIND=1
+  while getopts "h?" ARG $@; do
+    case $ARG in
+      h|?) print_list_help
+        ;;
+    esac
+  done
+
+  vlog "projects listed from" $LPM_PROJECTS
+
+  local LIST=$(ls -1A $LPM_PROJECTS)
+
+  list-projects -o
+}
+
+lpm-clone() {
+  [[ "$1" =~ ^-[h?]$ || -z "$1" ]] && print_clone_help
+
+  local NAME=$(echo "$1" | grep -Poe ".*/\K.*(?=.git)")
+
+  local PROJECT="$LPM_PROJECTS/$NAME"
+  local GIT_FOLDER="$PROJECT/.tempgit"
+
+  log "cloning repository from Git into $NAME"
+  lpm-create "$NAME"
+  git clone --no-checkout "$1" $GIT_FOLDER -q
+  cp -r $GIT_FOLDER/.git $PROJECT
+  rm -rf $GIT_FOLDER
+  local TMPPWD=$(pwd)
+  cd $PROJECT
+  git reset -q --hard HEAD
+  cd $TMPPWD
+  log "repository cloned successfully"
+}
+
+### CLI Args Processing ####################
+
+OPTIND=1
+
+while getopts "h?vVqs" ARG $@; do
+  case $ARG in
+    v) FLAG_VERBOSE=true
+      ;;
+    V)
+      echo v$LPM_VERSION
+      exit 0
+      ;;
+    q) FLAG_QUIET=true
+      ;;
+    s) FLAG_SIMPLE=true
+      ;;
+    h|?) print_cli_help
+      ;;
+  esac
+done
+
+shift $((OPTIND-1))
+
+### CLI Setup ##############################
+
+[ $FLAG_SIMPLE == true ] &&
+  FLAG_VERBOSE=false &&
+  FLAG_QUIET=false
+
+[ $FLAG_QUIET == true ] &&
+  FLAG_VERBOSE=false
+
+[ ! -e $LPM_HOME ] && mkdir -p $LPM_HOME &&
+  vlog "creating LPM home: $LPM_HOME"
+
+[ -z $LPM_PROJECTS ] &&
+  LPM_PROJECTS=$DF_PROJECTSDIR
+
+[ ! -d $LPM_PROJECTS ] &&
+  mkdir $LPM_PROJECTS &&
+  vlog "creating LPM projects folder: $LPM_PROJECTS"
+
+### Main ###################################
+
+COMMAND=$1; shift
+case $COMMAND in
+  get) lpm-get $@
+    ;;
+  create) lpm-create $@
+    ;;
+  remove) lpm-remove $@
+    ;;
+  list) lpm-list $@
+    ;;
+  clone) lpm-clone $@
+    ;;
+  *) print_cli_help
+    ;;
+esac
